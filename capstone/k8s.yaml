@@ -1,0 +1,97 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: incident-helper                  # a home for our agent
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: incident-helper                  # the "identity" of our pod
+  namespace: incident-helper
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-log-reader
+  namespace: demo                        # it can read ONLY in the namespace "demo"
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]      # read pods and their logs
+    verbs: ["get", "list"]               # read only: no delete, no edit
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: incident-helper-reads-demo
+  namespace: demo
+subjects:
+  - kind: ServiceAccount
+    name: incident-helper
+    namespace: incident-helper
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pod-log-reader
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: llm-secret
+  namespace: incident-helper
+type: Opaque
+stringData:
+  GEMINI_API_KEY: "REPLACE_ME"           # better: create it with kubectl (see the guide)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: incident-helper
+  namespace: incident-helper
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: incident-helper
+  template:
+    metadata:
+      labels:
+        app: incident-helper
+    spec:
+      serviceAccountName: incident-helper      # use the read-only identity
+      containers:
+        - name: app
+          image: YOUR_REGISTRY/incident-helper:1.0.0   # change this
+          ports:
+            - containerPort: 8080
+          env:
+            - name: LLM_PROVIDER
+              value: "gemini"
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:                  # read the key from the Secret
+                  name: llm-secret
+                  key: GEMINI_API_KEY
+          readinessProbe:                      # send traffic only when ready
+            httpGet: { path: /health, port: 8080 }
+          livenessProbe:                       # restart if it hangs
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: incident-helper
+  namespace: incident-helper
+spec:
+  selector:
+    app: incident-helper
+  ports:
+    - port: 80                           # people call port 80
+      targetPort: 8080                   # the pod listens on 8080
